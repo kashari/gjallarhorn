@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -673,5 +674,76 @@ func TestGroupListRoutes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Expected route '%s' to be registered, got routes: %v", expectedRoute, routes)
+	}
+}
+
+func TestRouterStress(t *testing.T) {
+	// Create a new router instance and add a stress endpoint.
+	router := Heimdallr()
+	router.GET("/stress", func(c *Context) {
+		// Simulate CPU-bound work.
+		sum := 0
+		for i := 0; i < 100000; i++ {
+			sum += i
+		}
+		// Simulate I/O delay.
+		time.Sleep(5 * time.Millisecond)
+		c.String(http.StatusOK, fmt.Sprintf("OK %d", sum))
+	})
+
+	// Use httptest server to run the router.
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	var wg sync.WaitGroup
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	// Stress test parameters.
+	totalRequests := 5000 // Total number of requests to issue.
+	concurrency := 200    // Maximum number of concurrent requests.
+	sem := make(chan struct{}, concurrency)
+
+	startTime := time.Now()
+	var errorCount int
+	var mu sync.Mutex
+
+	// Issue totalRequests concurrently.
+	for i := 0; i < totalRequests; i++ {
+		wg.Add(1)
+		sem <- struct{}{} // acquire semaphore slot
+
+		go func(reqID int) {
+			defer wg.Done()
+			defer func() { <-sem }() // release semaphore slot
+
+			resp, err := client.Get(ts.URL + "/stress")
+			if err != nil {
+				mu.Lock()
+				errorCount++
+				mu.Unlock()
+				t.Errorf("Request %d failed: %v", reqID, err)
+				return
+			}
+			if resp.StatusCode != http.StatusOK {
+				mu.Lock()
+				errorCount++
+				mu.Unlock()
+				t.Errorf("Request %d got status %d", reqID, resp.StatusCode)
+			}
+			// Drain and close the response body.
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}(i)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(startTime)
+	t.Logf("Stress test completed: %d requests in %s, errors: %d", totalRequests, elapsed, errorCount)
+
+	// You can define thresholds for acceptable performance.
+	if elapsed > 10*time.Second {
+		t.Errorf("Stress test took too long: %s", elapsed)
 	}
 }

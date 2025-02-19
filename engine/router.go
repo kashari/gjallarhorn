@@ -262,6 +262,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.Warnf("Route not found %s", time.Since(start).String())
 }
 
+// executeHandler runs the handler with the middleware chain and rate limiter.
 func (r *Router) executeHandler(w http.ResponseWriter, req *http.Request, handler http.HandlerFunc) {
 	finalHandler := handler
 	for i := len(r.middlewares) - 1; i >= 0; i-- {
@@ -274,13 +275,16 @@ func (r *Router) executeHandler(w http.ResponseWriter, req *http.Request, handle
 	}
 
 	if r.workerPool != nil {
-		var done sync.WaitGroup
-		done.Add(1)
-		r.workerPool.Submit(func() {
+		done := make(chan struct{})
+		err := r.workerPool.Submit(func() {
 			finalHandler(w, req)
-			done.Done()
+			close(done)
 		})
-		done.Wait()
+		if err != nil {
+			http.Error(w, "503 Service Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		<-done // wait for completion
 	} else {
 		finalHandler(w, req)
 	}
@@ -389,9 +393,10 @@ type WorkerPool struct {
 }
 
 // NewWorkerPool creates a new worker pool with the given size.
+// It sets the channel buffer to size*10 to allow bursts of tasks.
 func NewWorkerPool(size int) *WorkerPool {
 	wp := &WorkerPool{
-		tasks: make(chan func(), size),
+		tasks: make(chan func(), size*10),
 		size:  size,
 	}
 	for i := 0; i < size; i++ {
@@ -407,11 +412,14 @@ func (wp *WorkerPool) worker() {
 	}
 }
 
-func (wp *WorkerPool) Submit(task func()) {
+// Submit adds a task to the pool and increments the waitgroup.
+func (wp *WorkerPool) Submit(task func()) error {
 	wp.wg.Add(1)
 	wp.tasks <- task
+	return nil
 }
 
+// Shutdown waits for all tasks to complete then closes the tasks channel.
 func (wp *WorkerPool) Shutdown() {
 	wp.wg.Wait()
 	close(wp.tasks)
@@ -445,9 +453,7 @@ func (rl *RateLimiter) refillTokens() {
 		select {
 		case <-ticker.C:
 			rl.mu.Lock()
-			if rl.tokens < rl.maxTokens {
-				rl.tokens++
-			}
+			rl.tokens = rl.maxTokens
 			rl.mu.Unlock()
 		case <-rl.quit:
 			return
