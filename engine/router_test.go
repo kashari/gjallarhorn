@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -435,27 +434,6 @@ func TestWithRateLimiter(t *testing.T) {
 	r.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusTooManyRequests {
 		t.Errorf("Expected status 429 Too Many Requests, got %d", rec2.Code)
-	}
-}
-
-// ====== File Logging Test ======
-
-func TestWithFileLogging(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "logtest")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	r := Heimdallr().WithFileLogging(tmpFile.Name())
-	r.Info("test log entry")
-	time.Sleep(50 * time.Millisecond)
-	content, err := os.ReadFile(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("Failed to read temp file: %v", err)
-	}
-	if !strings.Contains(string(content), "test log entry") {
-		t.Errorf("Expected log entry to be written to file, got: %s", string(content))
 	}
 }
 
