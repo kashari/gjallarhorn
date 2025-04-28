@@ -3,11 +3,8 @@ package gjallarhorn
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"os"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -16,6 +13,7 @@ import (
 	"time"
 
 	"github.com/armon/go-radix"
+	"github.com/kashari/golog"
 )
 
 // Wrapper for http.HandlerFunc
@@ -101,6 +99,7 @@ func (c *Context) JSON(status int, data interface{}) {
 
 // String sends a plain text response.
 func (c *Context) String(status int, data string) {
+	golog.Debug("RESPONSE: {}", data)
 	c.Writer.Header().Set("Content-Type", "text/plain")
 	c.Writer.WriteHeader(status)
 	c.Writer.Write([]byte(data))
@@ -156,16 +155,13 @@ func (r *Router) WithRateLimiter(maxTokens int, refillInterval time.Duration) *R
 // WithFileLogging configures the router to log to the specified file in addition to the console.
 // If the file cannot be opened, it logs an error and leaves the existing logger intact.
 func (r *Router) WithFileLogging(filePath string) *Router {
-	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	err := golog.Init(filePath)
 	if err != nil {
-		r.Error("Failed to open log file")
-		return r
+		golog.Error("Failed to open log file {}: {}}", filePath, err)
+	} else {
+		golog.Info("Logging to file {}", filePath)
 	}
 
-	tee := io.MultiWriter(os.Stdout, f)
-
-	//append the console text to the file using no zap
-	log.SetOutput(tee)
 	return r
 }
 
@@ -240,12 +236,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		rt := val.(route)
 		if rt.method == req.Method {
 			r.executeHandler(w, req, rt.handler)
-			r.Infof("(STATIC ROUTE) Request: %s %s, from: %s completed in %s", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
+			golog.Info("(STATIC ROUTE) Request: {} {}, from: {} completed in {}", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
 			return
 		}
 		w.Header().Set("Allow", rt.method)
 		http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
-		r.Warnf("Method not allowed (static) %s", time.Since(start).String())
+		golog.Warn("Method not allowed (static) {}", time.Since(start).String())
 		return
 	}
 
@@ -253,13 +249,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if params, ok := matchPattern(rt.pattern, req.URL.Path); ok && rt.method == req.Method {
 			ctx := context.WithValue(req.Context(), paramsKey, params)
 			r.executeHandler(w, req.WithContext(ctx), rt.handler)
-			r.Infof("(DYNAMIC ROUTE) Request: %s %s, from: %s completed in %s", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
+			golog.Info("(DYNAMIC ROUTE) Request: {} {}, from: {} completed in {}", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
 			return
 		}
 	}
 
 	http.NotFound(w, req)
-	r.Warnf("Route not found %s", time.Since(start).String())
+	golog.Warn("Route not found {}", time.Since(start).String())
 }
 
 // executeHandler runs the handler with the middleware chain and rate limiter.
@@ -293,7 +289,7 @@ func (r *Router) executeHandler(w http.ResponseWriter, req *http.Request, handle
 // Start launches the HTTP server on the specified port after printing full configuration.
 func (r *Router) Start(port string) error {
 	r.printConfiguration()
-	r.Infof("Starting server in port %s", port)
+	golog.Info("Starting server in port {}", port)
 	server := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
@@ -317,41 +313,39 @@ func (r *Router) printStartupInfo() {
 
 			gjållårhðrñ - A simple HTTP router for Go
 `
-	log.Printf("%s\n", logo)
+	golog.Debug(logo)
 }
 
 // printConfiguration logs all startup configuration details.
 func (r *Router) printConfiguration() {
 	// Log registered routes.
-	r.Info("-------------------------- Registered Routes ---------------------------")
-	r.Info("--")
+	golog.Info("-------------------------- Registered Routes ---------------------------")
 	for _, rt := range r.ListRoutes() {
-		r.Info("Route " + rt)
+		golog.Info("Route " + rt)
 	}
-	r.Info("--")
-	r.Info("-------------------------- Registered Routes ---------------------------")
+	golog.Info("-------------------------- Registered Routes ---------------------------")
 
 	// Rate limiter configuration.
 	if r.rateLimiter != nil {
-		r.Infof("Rate Limiter Configuration MAX_TOKENS: %d REFILL_INTERVAL: %s", r.rateLimiter.maxTokens, r.rateLimiter.refillInterval)
+		golog.Info("Rate Limiter Configuration MAX_TOKENS: {} REFILL_INTERVAL: {}", r.rateLimiter.maxTokens, r.rateLimiter.refillInterval)
 	} else {
-		r.Info("Rate Limiter not configured")
+		golog.Info("Rate Limiter not configured")
 	}
 	// Worker pool configuration.
 	if r.workerPool != nil {
-		r.Infof("Worker Pool Configuration SIZE: %d", r.workerPool.size)
+		golog.Info("Worker Pool Configuration SIZE: {}", r.workerPool.size)
 	} else {
-		r.Infof("Worker Pool not configured")
+		golog.Info("Worker Pool not configured")
 	}
 
 	if len(r.middlewares) > 0 {
-		r.Info("-------------------------- Middleware Chain ---------------------------")
-		r.Info("--")
+		golog.Info("-------------------------- Middleware Chain ---------------------------")
+		golog.Info("--")
 		for i, mw := range r.middlewares {
-			r.Infof("Middleware %d: %s", i, getFunctionName(mw))
+			golog.Info("Middleware {}: {}", i, getFunctionName(mw))
 		}
-		r.Info("--")
-		r.Info("-------------------------- Middleware Chain ---------------------------")
+		golog.Info("--")
+		golog.Info("-------------------------- Middleware Chain ---------------------------")
 	}
 
 }
@@ -473,53 +467,6 @@ func (rl *RateLimiter) Allow() bool {
 
 func (rl *RateLimiter) Stop() {
 	close(rl.quit)
-}
-
-func (r *Router) log(level string, message string) {
-	switch level {
-	case "info":
-		log.Println(message)
-	case "warn":
-		log.Println(message)
-	case "error":
-		log.Println(message)
-	case "debug":
-		log.Println(message)
-	default:
-		log.Println(message)
-	}
-}
-
-func (r *Router) Info(message string) {
-	r.log("info", message)
-}
-
-func (r *Router) Warn(message string) {
-	r.log("warn", message)
-}
-
-func (r *Router) Error(message string) {
-	r.log("error", message)
-}
-
-func (r *Router) Debug(message string) {
-	r.log("debug", message)
-}
-
-func (r *Router) Infof(format string, args ...interface{}) {
-	r.Info(fmt.Sprintf(format, args...))
-}
-
-func (r *Router) Warnf(format string, args ...interface{}) {
-	r.Warn(fmt.Sprintf(format, args...))
-}
-
-func (r *Router) Errorf(format string, args ...interface{}) {
-	r.Error(fmt.Sprintf(format, args...))
-}
-
-func (r *Router) Debugf(format string, args ...interface{}) {
-	r.Debug(fmt.Sprintf(format, args...))
 }
 
 // Group represents a set of routes with a common prefix and its own middleware.
