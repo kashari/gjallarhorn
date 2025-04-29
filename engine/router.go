@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/armon/go-radix"
+	"github.com/kashari/gjallarhorn/binding"
 	"github.com/kashari/golog"
 )
 
@@ -85,9 +86,15 @@ func (c *Context) QueryParam(key string) string {
 	return c.Request.URL.Query().Get(key)
 }
 
+// ShouldBindWith binds the passed struct pointer using the specified binding engine.
+// See the binding package.
+func (c *Context) ShouldBindWith(obj any, b binding.Binding) error {
+	return b.Bind(c.Request, obj)
+}
+
 // BindJSON binds the request JSON to a given struct.
 func (c *Context) BindJSON(v interface{}) error {
-	return json.NewDecoder(c.Request.Body).Decode(v)
+	return c.ShouldBindWith(v, binding.JSON)
 }
 
 // JSON sends a JSON response.
